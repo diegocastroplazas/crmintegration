@@ -2,8 +2,12 @@ import urllib2
 import json
 import urllib
 import requests
-import pymysql.cursors
+import MySQLdb
+import sys
 from hashlib import md5
+
+reload(sys)
+sys.setdefaultencoding("utf-8")
 
 class CRMIntegration:
 
@@ -17,13 +21,41 @@ class CRMIntegration:
         self.accessKey = "CoRTFco4EJyNUE9"
 
         dbSettings = {
+
             'host': '192.168.33.21',
             'user': 'testcrm',
             'password': 'telconet894518',
-            'db': 'crmtn2'
+            'db': 'middleware'
         }
 
         self.dbCRM = dbSettings
+
+        self.equivalences = {
+
+            "nit_real": 'siccode',
+            "nombres": 'accountname',
+            "tipo_identificacion": "cf_559",
+            "telefono_1": 'phone',
+            "fax": 'fax',
+            "telefono_2": 'otherphone',
+            "mail": 'email1',
+            "vendedor": 'assigned_user_id',
+            "direccion": 'bill_street',
+            "y_ciudad": 'cf_708',
+            "y_dpto": 'cf_707',
+            "y_pais": 'cf_706',
+            "tipo_persona": 'cf_558',
+            "tipo_cliente": 'cf_562',
+            "tipo_carga": 'cf_709',
+            "actividad_comer": 'cf_565',
+            "razon_comercial": 'cf_566',
+            "sector": 'cf_568',
+            "tipo_tercero": 'cf_569',
+            "segmento": 'cf_570',
+            "celular": 'cf_578',
+            "contacto_1": 'cf_579'
+
+        }
 
     #Establece conexion con el CRM
     #Retorna los parametros de login.
@@ -35,44 +67,78 @@ class CRMIntegration:
         r = requests.get(self.url, params=args)
         print(r.url)
         response = json.loads(r.text.decode('utf-8'))
+        print ("Respuesta")
         print (str(response))
 
-        #TO-DO validar que la respuesta sea correcta
-        token = response['result']['token']
-        print (str(token))
+        if (str(response['success'])=='True'):
 
-        #Login...
+            print "Respuesta satisfactoria"
+            token = response['result']['token']
 
-        key = md5(token + self.accessKey)
-        tokenizedAccessKey = key.hexdigest()
-        args['accessKey'] = tokenizedAccessKey
-        args['operation'] = 'login'
-        data = urllib.urlencode(args)
-        req = urllib2.Request(self.url, data)
-        response = urllib2.urlopen(req)
-        response = json.loads(response.read())
+            key = md5(token + self.accessKey)
+            tokenizedAccessKey = key.hexdigest()
 
-        # set the sessionName
-        args['sessionName'] = response['result']['sessionName']
-        args['userId'] = response['result']['userId']
-        print (str(args))
-        self.sessionArgs = args
-        return args
+            args['accessKey'] = tokenizedAccessKey
+            args['operation'] = 'login'
+
+
+            data = urllib.urlencode(args)
+            req = urllib2.Request(self.url, data)
+            response = urllib2.urlopen(req)
+            response = json.loads(response.read())
+            print (str(response))
+
+            if (str(response['success'])=='True'):
+                print "Logueado"
+                self.sessionArgs = response['result']
+                print (str(self.sessionArgs))
+            else:
+                print "No se pudo completar el proceso de Logueo"
+
+        else:
+            print "No se tuvo respuesta"
+            return False
 
     #Crea una cuenta
-    def createAccount(self):
+    def createAccount(self, account):
 
-        idUser = self.sessionArgs['userId']
-        contactData = {'lastname': 'Prueba', 'assigned_user_id': idUser}
-        serializedContact = json.dumps(contactData)
-        print (serializedContact)
-        moduleName = 'Contacts'
-        print (self.sessionArgs['sessionName'])
+        accountData = {}
+        #print(str(account))
+        i=1
+        for k, v in self.equivalences.iteritems():
+            if (account.has_key(k)):
+                stringd = str(account[k])
+                stringproc = stringd.decode('utf-8', errors='ignore').encode('utf-8')
+                accountData[str(v)] = stringproc
+            else:
+                accountData[str(v)] = 'No existe'
+                print "El parametro no existe"
+            i = i+1
+
+
+        print ("EL NIT DEL VENDEDOR ES: ")
+        print (str(account['vendedor']))
+        if (account['vendedor'] == ''):
+            accountData['assigned_user_id'] = self.sessionArgs['userId']
+        else:
+            accountData['assigned_user_id'] = '19x' + self.getAssignedUserID(account['vendedor'])
+            #accountData['assigned_user_id'] = self.sessionArgs['userId']
+        #accountData[self.equivalences[]]
+
+
+        print ("accountData: ")
+        print (str(accountData))
+
+        serializedAccount = json.dumps(accountData)
+        #serializedAccount = json.dumps(accountData)
+        print (serializedAccount)
+
+        moduleName = 'Accounts'
 
         parames = {
             "operation": "create",
             "sessionName": self.sessionArgs['sessionName'],
-            "element": serializedContact,
+            "element": serializedAccount,
             "elementType": moduleName
         }
 
@@ -80,11 +146,10 @@ class CRMIntegration:
         print (data)
         req = urllib2.Request(self.url, data)
         response = urllib2.urlopen(req)
-        response = json.loads(response.read())
+        #response = json.loads(response.read())
+        print (str(response.read()))
 
 
-        #TO_DO: MANEJAR ERROR DE OOPERATION FAILED
-        print(str(response))
 
     def listTypes(self):
 
@@ -94,47 +159,72 @@ class CRMIntegration:
         response = json.loads(r.text.decode('utf-8'))
         print (str(response))
 
-    def describeObject(self, objName):
-
-        parameters =  {'operation': 'describe', 'sessionName': self.sessionArgs['sessionName'], 'elementType': objName}
-        r = requests.get(self.url, params=parameters)
-        print(r.url)
-        response = json.loads(r.text.decode('utf-8'))
-        print (str(response))
-
 
     #Funcion que ejecuta un query en la base de datos
-    def executeQuery(self, target):
+    def obtainAccountsFromSource(self):
 
-        query = "SELECT `id`, `password` FROM `users` WHERE `email`=%s"
+        print (str(self.dbCRM))
 
-        if target == 'CRM':
-            connParameters = self.dbCRM
-            print str(connParameters)
+        db = MySQLdb.connect(str(self.dbCRM['host']),str(self.dbCRM['user']),str(self.dbCRM['password']),str(self.dbCRM['db']))
 
-        connection = pymysql.connect(host=connParameters['host'],
-                             user=connParameters['user'],
-                             password=connParameters['password'],
-                             db=connParameters['db'],
-                             charset='utf8mb4',
-                             cursorclass=pymysql.cursors.DictCursor)
+        cursor = db.cursor(MySQLdb.cursors.DictCursor)
         try:
-            with connection.cursor() as cursor:
-                cursor.execute(query)
-                result = cursor.fetchone()
-                print (result)
-        finally:
-            connection.close()
+            cursor.execute("SELECT * FROM accounts")
+            result_set = cursor.fetchall()
+            return result_set
+        except:
+            print "Unable to fecth data"
+
+    def isSyncronized(self, nit):
+
+        db = MySQLdb.connect(str(self.dbCRM['host']),str(self.dbCRM['user']),str(self.dbCRM['password']),str(self.dbCRM['db']))
+        cursor = db.cursor()
+
+
+        query = "SELECT nit_real FROM accounts WHERE nit_real = '%s'" % (nit)
+        cursor.execute(query)
+        result  = cursor.fetchone()
+        if (str(result) == nit):
+            #print "El NIT existe"
+            return True
+        else:
+            #print "No existe"
+            return False
+
+    def getAssignedUserID(self, cc):
+
+        db = MySQLdb.connect(str(self.dbCRM['host']),str(self.dbCRM['user']),str(self.dbCRM['password']),'crmtn2')
+        #cursor = db.cursor()
+        cursor = db.cursor(MySQLdb.cursors.DictCursor)
+        query = "SELECT id FROM vtiger_users WHERE description = '%s'" % (cc)
+        cursor.execute(query)
+        result  = cursor.fetchone()
+        print ("EL ID DEL VENDEDOR ES: ")
+        print (result)
+        if result:
+            val = str(result['id'])
+        else:
+            val = '1'
+        return val
 
 
 def main():
 
-    URL = 'http://v3.telco.net.co/crmtn2'
+    URL = 'http://192.168.33.21/crmtn2'
     conn = CRMIntegration(URL)
-    parameters = conn.login()
-    conn.createAccount()
-    conn.executeQuery('CRM')
-    #conn.listTypes()conn.describeObject('Accounts')
+    login = conn.login()
+
+    accounts = conn.obtainAccountsFromSource()
+
+
+    for account in accounts:
+        if conn.isSyncronized(account["nit_real"]):
+            print "No hago nada"
+        else:
+            print "Debo sincronizar"
+            conn.createAccount(account)
+
+
 
 
 if __name__ == '__main__':
